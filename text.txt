@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Driftwood - Chill Survival Simulator</title>
+<style>
+body { margin:0; overflow:hidden; background:#000; }
+#joystick { position: fixed; bottom: 20px; left: 20px; width:120px; height:120px; background: rgba(255,255,255,0.2); border-radius:50%; touch-action: none; }
+button { font-family:Arial; font-weight:bold; }
+</style>
+</head>
+<body>
+
+<div id="joystick"></div>
+<button id="craftBtn">Craft</button>
+<button id="fireBtn">Fire</button>
+<button id="cookBtn">Cook</button>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.min.js"></script>
+<script>
+// ====== SCENE & CAMERA ======
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 500);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// ====== LIGHT ======
+const hemiLight = new THREE.HemisphereLight(0xffffff,0x445555,1);
+scene.add(hemiLight);
+const sun = new THREE.DirectionalLight(0xffffff,1);
+sun.position.set(20,40,20);
+scene.add(sun);
+
+// ====== DAY/NIGHT ======
+let timeOfDay = 0; const DAY_SPEED = 0.00005;
+function updateDayNight(){
+    timeOfDay=(timeOfDay+DAY_SPEED)%1;
+    const angle = timeOfDay*Math.PI*2;
+    sun.position.set(Math.cos(angle)*30,Math.sin(angle)*30,Math.sin(angle)*10);
+    const daylight = Math.max(0,Math.sin(angle));
+    sun.intensity = daylight;
+    hemiLight.intensity = 0.4 + daylight*0.6;
+    const dayColor=new THREE.Color(0x9fc6c1), sunsetColor=new THREE.Color(0xffb37b), nightColor=new THREE.Color(0x0b1d2a);
+    if(daylight>0.5) scene.background=dayColor;
+    else if(daylight>0.1) scene.background=sunsetColor;
+    else scene.background=nightColor;
+}
+
+// ====== TERRAIN ======
+const grassMat=new THREE.MeshLambertMaterial({color:0x6f8f6b});
+const grassPlane=new THREE.Mesh(new THREE.PlaneGeometry(200,100), grassMat);
+grassPlane.rotation.x=-Math.PI/2; grassPlane.position.set(0,0,-50); scene.add(grassPlane);
+
+const sandMat=new THREE.MeshLambertMaterial({color:0xf2d397});
+const sandPlane=new THREE.Mesh(new THREE.PlaneGeometry(200,40), sandMat);
+sandPlane.rotation.x=-Math.PI/2; sandPlane.position.set(0,0.01,0); scene.add(sandPlane);
+
+const waterMat=new THREE.MeshLambertMaterial({color:0x1e90ff,transparent:true,opacity:0.7});
+const waterPlane=new THREE.Mesh(new THREE.PlaneGeometry(200,100), waterMat);
+waterPlane.rotation.x=-Math.PI/2; waterPlane.position.set(0,0.02,60); scene.add(waterPlane);
+
+// ====== PLAYER ======
+const player=new THREE.Group();
+const body=new THREE.Mesh(new THREE.CapsuleGeometry(0.4,1,6,12),new THREE.MeshLambertMaterial({color:0x5c6f7b}));
+body.position.y=1; player.add(body); player.position.set(0,0,-30); scene.add(player);
+
+// ====== INPUT ======
+let moveX=0, moveZ=0; const keys={};
+window.addEventListener("keydown", e=>keys[e.key.toLowerCase()]=true);
+window.addEventListener("keyup", e=>keys[e.key.toLowerCase()]=false);
+
+const joystick=document.getElementById("joystick");
+joystick.addEventListener("touchmove", e=>{
+  const r=joystick.getBoundingClientRect(); const t=e.touches[0];
+  moveX=(t.clientX-(r.left+60))/40; moveZ=(t.clientY-(r.top+60))/40;
+  moveX=Math.max(-1,Math.min(1,moveX)); moveZ=Math.max(-1,Math.min(1,moveZ));
+});
+joystick.addEventListener("touchend",()=>moveX=moveZ=0);
+
+// ====== CAMERA ======
+const camOffset=new THREE.Vector3(0,5,8);
+
+// ====== RESOURCES ======
+const resources=[], resourceMat={wood:new THREE.MeshLambertMaterial({color:0x8b5a2b}),rock:new THREE.MeshLambertMaterial({color:0x555555}),shell:new THREE.MeshLambertMaterial({color:0xfff5e1})};
+for(let i=0;i<20;i++){
+    const type=i%3===0?'wood':i%3===1?'rock':'shell';
+    const geo=new THREE.CylinderGeometry(0.2,0.2,0.6,8);
+    if(type==='rock') geo.scale(1,1,1.2); if(type==='shell') geo.scale(0.5,0.1,0.5);
+    const mesh=new THREE.Mesh(geo,resourceMat[type]);
+    mesh.position.set(Math.random()*160-80,0.1,Math.random()*30-15);
+    mesh.userData={type:type,collected:false}; scene.add(mesh); resources.push(mesh);
+}
+
+// ====== INVENTORY ======
+const inventory={wood:0,rock:0,shell:0};
+const inventoryDiv=document.createElement('div'); 
+inventoryDiv.style.position='fixed'; inventoryDiv.style.top='10px'; inventoryDiv.style.left='10px';
+inventoryDiv.style.padding='8px'; inventoryDiv.style.background='rgba(0,0,0,0.3)'; inventoryDiv.style.color='white';
+inventoryDiv.style.fontFamily='Arial'; inventoryDiv.style.fontSize='16px';
+inventoryDiv.style.zIndex=10; document.body.appendChild(inventoryDiv);
+function updateInventoryUI(){inventoryDiv.innerHTML=`Inventory:<br>Wood: ${inventory.wood}<br>Rock: ${inventory.rock}<br>Shell: ${inventory.shell}`;}
+
+// ====== AUDIO ======
+const audioPickup=new Audio('https://freesound.org/data/previews/151/151022_2635417-lq.mp3');
+const audioCraft=new Audio('https://freesound.org/data/previews/341/341695_3248244-lq.mp3');
+const audioFire=new Audio('https://freesound.org/data/previews/250/250629_4486188-lq.mp3');
+const audioCook=new Audio('https://freesound.org/data/previews/331/331912_3248244-lq.mp3');
+
+// ====== FLOATING TEXT ======
+const floatingTexts=[];
+function addFloatingText(text,pos){ 
+  const div=document.createElement('div'); div.innerHTML=text; div.style.position='absolute';
+  div.style.color='yellow'; div.style.fontFamily='Arial'; div.style.fontWeight='bold'; div.style.fontSize='20px';
+  div.style.pointerEvents='none'; document.body.appendChild(div);
+  floatingTexts.push({div,pos:pos.clone(),start:Date.now()});
+}
+
+// ====== CRAFTING AREA ======
+const craftArea=new THREE.Mesh(new THREE.BoxGeometry(2,0.1,2), new THREE.MeshLambertMaterial({color:0x8b4513}));
+craftArea.position.set(-20,0,0); scene.add(craftArea);
+
+// ====== FIRE & COOKING ======
+let fire=null;
+function attemptFire(){ if(inventory.wood>=1 && player.position.distanceTo(craftArea.position)<2){ inventory.wood--; updateInventoryUI();
+fire=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.5,0.3,12), new THREE.MeshBasicMaterial({color:0xff5500}));
+fire.position.set(craftArea.position.x,0.15,craftArea.position.z); scene.add(fire);
+audioFire.play(); addFloatingText("Fire Lit!", craftArea.position); }}
+function attemptCook(){ if(fire && inventory.shell>=1 && player.position.distanceTo(fire.position)<2){
+  inventory.shell--; inventory.wood++; updateInventoryUI(); audioCook.play();
+  addFloatingText("Cooked Shell!", fire.position.clone().add(new THREE.Vector3(0,0.5,0)));
+}}
+
+// ====== BUTTONS ======
+document.getElementById('craftBtn').addEventListener('click',()=>{ if(player.position.distanceTo(craftArea.position)<2) attemptCraft(); });
+document.getElementById('fireBtn').addEventListener('click', attemptFire);
+document.getElementById('cookBtn').addEventListener('click', attemptCook);
+
+// ====== RESOURCE COLLECTION & CRAFTING ======
+function checkResources(){ resources.forEach(res=>{ if(!res.userData.collected){
+    const dist=res.position.distanceTo(player.position);
+    if(dist<1.2){ res.userData.collected=true; scene.remove(res);
+        inventory[res.userData.type]++; updateInventoryUI(); audioPickup.play();
+        addFloatingText(`+1 ${res.userData.type}`, res.position); } } });}
+function attemptCraft(){ if(inventory.wood>=3 && inventory.rock>=2 && player.position.distanceTo(craftArea.position)<2){
+  inventory.wood-=3; inventory.rock-=2; updateInventoryUI();
+  const shelter=new THREE.Mesh(new THREE.BoxGeometry(2,1,2),new THREE.MeshLambertMaterial({color:0x654321}));
+  shelter.position.set(craftArea.position.x,0.5,craftArea.position.z); shelter.userData.glow=true;
+  scene.add(shelter); audioCraft.play(); addFloatingText('Shelter Built!', craftArea.position);
+}}
+
+// ====== WATER ANIMATION ======
+function animateWater(){ const t=Date.now()*0.001; waterPlane.position.y=0.02+Math.sin(t*0.7)*0.05; }
+
+// ====== MAIN LOOP ======
+function animate(){ 
+    requestAnimationFrame(animate); updateDayNight(); animateWater(); checkResources();
+
+    let dx=0,dz=0; if(keys["w"]) dz-=1; if(keys["s"]) dz+=1; if(keys["a"]) dx-=1; if(keys["d"]) dx+=1;
+    dx+=moveX; dz+=moveZ;
+    const dir=new THREE.Vector3(dx,0,dz); if(dir.length()>0){ dir.normalize().multiplyScalar(0.08); player.position.add(dir); player.rotation.y=Math.atan2(dir.x,dir.z); }
+
+    if(keys["e"] && player.position.distanceTo(craftArea.position)<2) attemptCraft();
+    if(keys["f"]) attemptFire(); if(keys["c"]) attemptCook();
+
+    const now=Date.now();
+    floatingTexts.forEach((f,i)=>{
+        const screenPos=f.pos.clone().project(camera);
+        f.div.style.left=((screenPos.x+1)/2*window.innerWidth)+'px';
+        f.div.style.top=((-screenPos.y+1)/2*window.innerHeight)+'px';
+        const elapsed=(now-f.start)/1000; f.div.style.opacity=(1-elapsed); f.pos.y+=0.01;
+        if(elapsed>1){ document.body.removeChild(f.div); floatingTexts.splice(i,1); }
+    });
+
+    scene.traverse(obj=>{ if(obj.userData.glow) obj.material.color.setHSL(0.1,0.8,0.5 + Math.max(0,0.5-Math.sin(timeOfDay*Math.PI*2)/2)); });
+
+    const camTarget=player.position.clone().add(camOffset);
+    camera.position.lerp(camTarget,0.08); camera.lookAt(player.position.x,1,player.position.z);
+    renderer.render(scene,camera);
+}
+animate();
+
+// ====== RESIZE ======
+window.addEventListener("resize",()=>{ camera.aspect=window.innerWidth/window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth,window.innerHeight); });
+</script>
+
+</body>
+</html>
